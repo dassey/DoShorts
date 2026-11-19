@@ -1,9 +1,9 @@
 // ComfyUI: connection, the workflows DoShorts runs, and the graphs it sends.
 //
 // Every workflow uses only nodes that ship with ComfyUI. The image and video
-// workflows follow ComfyUI's own bundled blueprints ("Text to Image
-// (Z-Image-Turbo)" and "Text to Video (Wan 2.2)"), so the expected model files
-// and their download links are the official ones.
+// workflows follow ComfyUI's own bundled blueprints ("Image to Video (MiniMax
+// H3)", "Text to Image (Z-Image-Turbo)" and "Text to Video (Wan 2.2)"), so the
+// expected model files and their download links are the official ones.
 
 export type ComfyConnection = { host: string; port: number; modelsDir: string };
 
@@ -43,8 +43,10 @@ export type Workflow = {
   sizes: [number, number][];
   fps: number;
   negative: string;
-  /** Adds the nodes that produce frames for one shot and returns the IMAGE output. */
-  frames: (g: GraphBuilder, shot: ShotRequest) => Ref;
+  /** The model also generates a soundtrack for each clip. */
+  sound?: boolean;
+  /** Adds the nodes that render one shot. Returns its IMAGE output and, if the model makes sound, its AUDIO output. */
+  frames: (g: GraphBuilder, shot: ShotRequest) => { images: Ref; audio?: Ref };
 };
 
 class GraphBuilder {
@@ -65,6 +67,45 @@ const WAN_NEGATIVE =
   "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走";
 
 export const WORKFLOWS: Workflow[] = [
+  {
+    id: "h3",
+    name: "Video + sound · MiniMax H3 Turbo",
+    kind: "video",
+    summary: "A moving clip with generated sound per shot, using the fast Turbo LoRA. Needs a strong GPU.",
+    basedOn: "Image to Video (MiniMax H3)",
+    sound: true,
+    slots: [
+      { id: "unet", label: "Diffusion model", folder: "diffusion_models", expected: "minimax_h3_fl2va_pruned_int8_convrot.safetensors", url: `${HF}/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_int8_convrot.safetensors` },
+      { id: "lora", label: "Turbo LoRA", folder: "loras", expected: "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors", url: "https://huggingface.co/lightx2v/Minimax-h3-Turbo/resolve/main/minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors" },
+      { id: "clip", label: "Text encoder", folder: "text_encoders", expected: "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors", url: `${HF}/MiniMax-H3/resolve/main/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors` },
+      { id: "vae", label: "Video VAE", folder: "vae", expected: "minimax_h3_video_vae_fp16.safetensors", url: `${HF}/MiniMax-H3/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors` },
+      { id: "audioVae", label: "Audio VAE", folder: "vae", expected: "minimax_h3_audio_vae_fp32.safetensors", url: `${HF}/MiniMax-H3/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors` },
+    ],
+    sizes: [[768, 1344], [544, 960]],
+    fps: 24,
+    negative: "",
+    frames(g, s) {
+      const base = g.add("UNETLoader", { unet_name: s.models.unet, weight_dtype: "default" });
+      const model = g.add("LoraLoaderModelOnly", { model: base, lora_name: s.models.lora, strength_model: 1 });
+      const clip = g.add("CLIPLoader", { clip_name: s.models.clip, type: "minimax", device: "default" });
+      const vae = g.add("VAELoader", { vae_name: s.models.vae });
+      const audioVae = g.add("VAELoader", { vae_name: s.models.audioVae });
+      // H3 wants a frame count on its 17k+5 grid.
+      const raw = Math.max(5, Math.round(s.seconds * this.fps));
+      const length = raw + ((5 - (raw % 17) + 17) % 17);
+      // No first frame is connected, so the clip is generated from the text alone.
+      const setup = g.add("MiniMaxH3ImageToVideo", { clip, vae, prompt: s.prompt, width: s.width, height: s.height, length });
+      const noise = g.add("RandomNoise", { noise_seed: s.seed });
+      const sampler = g.add("KSamplerSelect", { sampler_name: "res_multistep" });
+      const sigmas = g.add("BasicScheduler", { model, scheduler: "simple", steps: 6, denoise: 1 });
+      const guider = g.add("BasicGuider", { model, conditioning: setup });
+      const sampled = g.add("SamplerCustomAdvanced", { noise, guider, sampler, sigmas, latent_image: out(setup, 1) });
+      return {
+        images: g.add("VAEDecode", { samples: sampled, vae }),
+        audio: g.add("VAEDecodeAudio", { samples: sampled, vae: audioVae }),
+      };
+    },
+  },
   {
     id: "zimage",
     name: "Stills · Z-Image Turbo",
@@ -92,7 +133,7 @@ export const WORKFLOWS: Workflow[] = [
         seed: s.seed, steps: 8, cfg: 1, sampler_name: "res_multistep", scheduler: "simple", denoise: 1,
       });
       const image = g.add("VAEDecode", { samples: sampled, vae });
-      return g.add("RepeatImageBatch", { image, amount: Math.round(s.seconds * this.fps) });
+      return { images: g.add("RepeatImageBatch", { image, amount: Math.round(s.seconds * this.fps) }) };
     },
   },
   {
@@ -136,7 +177,7 @@ export const WORKFLOWS: Workflow[] = [
         ...shared, model: low, latent_image: first, add_noise: "disable", noise_seed: 0,
         start_at_step: 2, end_at_step: 4, return_with_leftover_noise: "disable",
       });
-      return g.add("VAEDecode", { samples: second, vae });
+      return { images: g.add("VAEDecode", { samples: second, vae }) };
     },
   },
   {
@@ -158,7 +199,7 @@ export const WORKFLOWS: Workflow[] = [
         seed: s.seed, steps: 25, cfg: 7, sampler_name: "dpmpp_2m", scheduler: "karras", denoise: 1,
       });
       const image = g.add("VAEDecode", { samples: sampled, vae: out(ckpt, 2) });
-      return g.add("RepeatImageBatch", { image, amount: Math.round(s.seconds * this.fps) });
+      return { images: g.add("RepeatImageBatch", { image, amount: Math.round(s.seconds * this.fps) }) };
     },
   },
 ];
@@ -173,14 +214,15 @@ export function shotGraph(
   filePrefix: string,
 ): Graph {
   const g = new GraphBuilder();
-  let images = workflow.frames(g, shot);
+  const rendered = workflow.frames(g, shot);
+  let images = rendered.images;
   if (caption.style.on && caption.text.trim()) {
     images = g.add("TextOverlay", {
       images, text: caption.text, font_size: caption.style.size, color: "#ffffff",
       position: caption.style.position, align: "center", outline: true,
     });
   }
-  const video = g.add("CreateVideo", { images, fps: workflow.fps });
+  const video = g.add("CreateVideo", { images, fps: workflow.fps, ...(rendered.audio ? { audio: rendered.audio } : {}) });
   g.add("SaveVideo", { video, filename_prefix: filePrefix, format: "mp4", "format.codec": "h264" });
   return g.graph;
 }
