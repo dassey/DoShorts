@@ -37,6 +37,12 @@ export const TOOLS = [
     tagline: "A week of Shorts for your niche, one distinct idea per day.",
     short: "A week of Shorts ideas",
   },
+  {
+    slug: "generate",
+    name: "Generate",
+    tagline: "Turn a script into a captioned vertical video, rendered on your own machine with ComfyUI.",
+    short: "Render the Short with ComfyUI",
+  },
 ] as const;
 
 export type ToolSlug = (typeof TOOLS)[number]["slug"];

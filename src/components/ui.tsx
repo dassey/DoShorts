@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { Script } from "@/lib/schemas";
 
@@ -96,6 +97,27 @@ export function Handoff({
     >
       {children} →
     </Link>
+  );
+}
+
+/** Sends a finished script to Generate. It is too long for a link, so it travels in session storage. */
+export function ToGenerate({ title, script }: { title?: string; script: Script }) {
+  const router = useRouter();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        try {
+          sessionStorage.setItem("ds_generate_source", `${title ? `${title}\n\n` : ""}${scriptToText(script)}`);
+        } catch {
+          // storage unavailable: Generate opens empty
+        }
+        router.push("/generate");
+      }}
+      className="shrink-0 rounded-md px-2 py-1 text-xs text-lime hover:bg-lime/10"
+    >
+      Generate video →
+    </button>
   );
 }
 

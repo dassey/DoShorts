@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { Suspense } from "react";
 import { Analyzer } from "@/components/tools/Analyzer";
 import { Copilot } from "@/components/tools/Copilot";
+import { Generate } from "@/components/tools/Generate";
 import { Planner } from "@/components/tools/Planner";
 import { ScriptWriter } from "@/components/tools/ScriptWriter";
 import { Titles } from "@/components/tools/Titles";
@@ -16,6 +17,7 @@ const SCREENS: Record<ToolSlug, React.ComponentType> = {
   analyze: Analyzer,
   trends: Trends,
   planner: Planner,
+  generate: Generate,
 };
 
 type Props = { params: Promise<{ tool: string }> };

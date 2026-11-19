@@ -10,8 +10,30 @@ A standalone AI toolkit for planning and improving short-form videos.
 | **Short Analyzer** | Reads a YouTube Short's title, stats and captions; reports on hook, pacing, title, drop-off risks and fixes |
 | **Trending Topics** | Topics getting attention in a niche, with a video idea for each |
 | **7-Day Planner** | A week of Shorts for a niche |
+| **Generate** | Turns a script into a captioned vertical video, rendered locally by ComfyUI |
 
 Results hand off between tools (a trending topic opens in Copilot, a Copilot title opens in the Title Scorer, a planner day opens in the Script Writer).
+
+## Generate (ComfyUI)
+
+Generate renders the Short on your own machine with [ComfyUI](https://github.com/comfyanonymous/ComfyUI). It needs DoShorts to be running on the same machine or network as ComfyUI.
+
+1. **One-time setup.** Enter ComfyUI's IP address, port and models folder. They are saved in the browser.
+2. **Shot list.** Your AI splits the script into shots of 2 to 5 seconds, each with a caption and a prompt. Every field is editable.
+3. **Workflow and models.** Pick a workflow. Each model slot shows the file the workflow expects and a dropdown of what you have installed. For a missing file it shows the official download link and the exact folder to save it in.
+4. **Render.** Each shot becomes a clip with its caption burned in, then the clips are joined into one mp4 in ComfyUI's `output/DoShorts/` folder. A failed shot can be fixed and re-rendered without redoing the rest.
+
+| Workflow | Follows ComfyUI's bundled blueprint | Models |
+| --- | --- | --- |
+| Stills, Z-Image Turbo | Text to Image (Z-Image-Turbo) | `z_image_turbo_bf16`, `qwen_3_4b`, `ae` |
+| Video clips, Wan 2.2 | Text to Video (Wan 2.2), 4-step LoRA path | Wan 2.2 high and low noise models, two LoRAs, `umt5_xxl`, `wan_2.1_vae` |
+| Stills, your own checkpoint | none (the classic checkpoint graph) | Any SD or SDXL checkpoint |
+
+**No custom nodes.** Every node used ships with ComfyUI, including caption burn-in (`TextOverlay`) and assembly (`CreateVideo`, `ConcatenateVideo`, `SaveVideo`). These are recent additions, so use an up-to-date ComfyUI. Workflows live in `src/lib/comfy.ts`.
+
+The output has no sound: ComfyUI has no built-in text-to-speech node. Record the captions as your voiceover, or add audio in an editor.
+
+The page reaches ComfyUI through a small relay in the DoShorts server (`/api/comfy`), because ComfyUI refuses browser requests from other sites. So ComfyUI needs no special launch flags. The relay only runs when DoShorts is used locally, only accepts requests from the DoShorts page, only contacts loopback or private-network addresses, and only forwards the six ComfyUI endpoints Generate uses. Set `DOSHORTS_COMFY_BRIDGE=0` to turn it off.
 
 ## Choose your AI
 
@@ -71,4 +93,4 @@ Optional environment (see `.env.example`):
 
 ## Not in scope
 
-DoShorts does not run inside YouTube Studio, and does not do keyword-volume research, competitor analytics, bulk tag editing, or live title and thumbnail split-testing.
+DoShorts does not generate voiceover or music, and does not upload to YouTube. It does not run inside YouTube Studio, and does not do keyword-volume research, competitor analytics, bulk tag editing, or live title and thumbnail split-testing.

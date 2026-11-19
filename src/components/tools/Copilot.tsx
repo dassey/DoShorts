@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import type { CopilotResult } from "@/lib/schemas";
 import { ToolFrame, useTool } from "../ToolFrame";
-import { Card, CopyButton, Field, Handoff, List, Row, ScriptView, Section, inputClass, scriptToText } from "../ui";
+import { Card, CopyButton, Field, Handoff, List, Row, ScriptView, Section, ToGenerate, inputClass, scriptToText } from "../ui";
 
 export function Copilot() {
   const params = useSearchParams();
@@ -60,7 +60,12 @@ export function Copilot() {
 
           <Section
             title={`Script · ${Math.round(r.script.total_seconds)}s`}
-            action={<CopyButton text={scriptToText(r.script)} label="Copy script" />}
+            action={
+              <span className="flex items-center">
+                <ToGenerate script={r.script} />
+                <CopyButton text={scriptToText(r.script)} label="Copy script" />
+              </span>
+            }
           >
             <ScriptView script={r.script} />
           </Section>

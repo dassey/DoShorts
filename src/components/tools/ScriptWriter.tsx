@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import type { ScriptResult } from "@/lib/schemas";
 import { ToolFrame, useTool } from "../ToolFrame";
-import { Card, CopyButton, Field, Handoff, ScriptView, Section, inputClass, scriptToText } from "../ui";
+import { Card, CopyButton, Field, Handoff, ScriptView, Section, ToGenerate, inputClass, scriptToText } from "../ui";
 
 const LENGTHS = [20, 30, 45, 60];
 
@@ -27,6 +27,7 @@ export function ScriptWriter() {
             title={`Script · ${Math.round(r.script.total_seconds)}s`}
             action={
               <span className="flex items-center">
+                <ToGenerate title={r.title} script={r.script} />
                 <Handoff tool="titles" param="title" value={r.title}>
                   Score title
                 </Handoff>

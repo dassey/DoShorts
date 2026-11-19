@@ -16,6 +16,7 @@ export const inputs = {
   analyze: z.object({ url: text(300), transcript: optional(8000) }),
   trends: z.object({ niche: text(120) }),
   planner: z.object({ niche: text(120), goal: optional(200) }),
+  generate: z.object({ source: text(6000), seconds: z.coerce.number().int().min(10).max(90).default(30) }),
 };
 
 // ---------- Outputs ----------
@@ -110,9 +111,22 @@ export const outputs = {
       }),
     ),
   }),
+  generate: z.object({
+    title: z.string(),
+    style: z.string().describe("One line applied to every shot so they look like one video: medium, palette, lens, mood"),
+    shots: z.array(
+      z.object({
+        seconds: z.number().describe("Whole seconds, 2 to 5"),
+        caption: z.string().describe("The exact words spoken during this shot"),
+        visual: z.string().describe("Self-contained prompt for an image or video model"),
+        motion: z.string().describe("One sentence of camera or subject movement"),
+      }),
+    ),
+  }),
 };
 
 export type Script = z.infer<typeof ScriptSchema>;
+export type Storyboard = z.infer<typeof outputs.generate>;
 export type CopilotResult = z.infer<typeof outputs.copilot>;
 export type TitlesResult = z.infer<typeof outputs.titles>;
 export type ScriptResult = z.infer<typeof outputs.script>;
