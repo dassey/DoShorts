@@ -10,6 +10,10 @@ type Remaining = Record<ToolSlug, number> | null;
 type AppState = {
   ready: boolean;
   user: User | null;
+  /** This deployment has a built-in AI. */
+  hosted: boolean;
+  /** Google sign-in is configured on this deployment. */
+  authEnabled: boolean;
   /** Free runs left per tool for anonymous visitors; null when signed in. */
   remaining: Remaining;
   setRemaining: (r: Remaining) => void;
@@ -23,13 +27,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<User | null>(null);
   const [remaining, setRemaining] = useState<Remaining>(null);
+  const [flags, setFlags] = useState({ hosted: false, authEnabled: false });
 
   useEffect(() => {
     let live = true;
     fetch("/api/me")
       .then((r) => r.json())
-      .then((d: { user: User | null; remaining: Remaining }) => {
+      .then((d: { user: User | null; remaining: Remaining; hosted: boolean; authEnabled: boolean }) => {
         if (!live) return;
+        setFlags({ hosted: d.hosted, authEnabled: d.authEnabled });
         setUser(d.user);
         setRemaining(d.remaining);
       })
@@ -44,8 +50,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const signOut = useCallback(() => void nextSignOut({ callbackUrl: "/" }), []);
 
   const value = useMemo(
-    () => ({ ready, user, remaining, setRemaining, signIn, signOut }),
-    [ready, user, remaining, signIn, signOut],
+    () => ({ ready, user, ...flags, remaining, setRemaining, signIn, signOut }),
+    [ready, user, flags, remaining, signIn, signOut],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

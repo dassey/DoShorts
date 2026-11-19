@@ -1,6 +1,6 @@
 import { currentUser } from "@/auth";
-import { GenerationError } from "@/lib/claude";
-import { runTool } from "@/lib/run";
+import { GenerationError } from "@/lib/errors";
+import { hostedAvailable, runTool } from "@/lib/run";
 import { inputs } from "@/lib/schemas";
 import { FREE_USES_PER_TOOL, getTool } from "@/lib/tools";
 import { readUsage, remainingFor, writeUsage } from "@/lib/usage";
@@ -10,6 +10,10 @@ export const maxDuration = 120;
 export async function POST(request: Request, { params }: { params: Promise<{ tool: string }> }) {
   const tool = getTool((await params).tool);
   if (!tool) return Response.json({ error: "Unknown tool." }, { status: 404 });
+
+  if (!hostedAvailable()) {
+    return Response.json({ error: "No built-in AI is set up here. Choose your own in AI settings." }, { status: 503 });
+  }
 
   const body = await request.json().catch(() => null);
   const parsed = inputs[tool.slug].safeParse(body);

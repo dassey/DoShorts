@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { FREE_USES_PER_TOOL, TOOLS } from "@/lib/tools";
+import { TOOLS } from "@/lib/tools";
 
 const FLOW = ["Find a topic", "Pick a title and hook", "Write the script", "Plan the week", "Fix what underperforms"];
 
@@ -19,7 +19,11 @@ export default function Home() {
           Start with a topic
         </Link>
         <p className="text-sm text-mute">
-          Free. Try each tool {FREE_USES_PER_TOOL === 2 ? "twice" : `${FREE_USES_PER_TOOL} times`} before signing in.
+          Free. Runs on{" "}
+          <Link href="/settings" className="text-text underline underline-offset-4">
+            the AI you choose
+          </Link>
+          , local models included.
         </p>
       </div>
 

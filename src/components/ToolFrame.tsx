@@ -1,7 +1,13 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useState } from "react";
+import { GenerationError } from "@/lib/errors";
+import { buildPrompt, finalize, needsContext, SYSTEM, type ToolContext } from "@/lib/prompts";
+import { generateWith, type AiConfig } from "@/lib/providers";
+import { inputs, outputs } from "@/lib/schemas";
 import { FREE_USES_PER_TOOL, getTool, type ToolSlug } from "@/lib/tools";
+import { useAi } from "./AiProvider";
 import { useApp } from "./AppProvider";
 import { GoogleMark } from "./Shell";
 
@@ -11,14 +17,46 @@ type State<T> =
   | { status: "done"; result: T }
   | { status: "error"; error: string };
 
+/** Runs a tool on the user's own AI. The model call goes from this browser straight to the provider. */
+async function runOnOwnAi(slug: ToolSlug, raw: Record<string, unknown>, config: AiConfig): Promise<unknown> {
+  const parsed = inputs[slug].safeParse(raw);
+  if (!parsed.success) throw new GenerationError("Check the form and try again.", 400);
+
+  let ctx: ToolContext = {};
+  if (needsContext(slug)) {
+    // Public YouTube data only. The key and the model call are not involved.
+    const res = await fetch(`/api/context/${slug}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(parsed.data),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new GenerationError(data.error ?? "Could not load the video data.", res.status);
+    ctx = data;
+  }
+
+  const data = await generateWith(config, {
+    system: SYSTEM,
+    prompt: buildPrompt(slug, parsed.data as never, ctx),
+    schema: outputs[slug],
+  });
+  return finalize(slug, data as never, ctx);
+}
+
 export function useTool<T>(slug: ToolSlug) {
   const { setRemaining } = useApp();
+  const { active } = useAi();
   const [state, setState] = useState<State<T>>({ status: "idle" });
 
   const run = useCallback(
     async (input: Record<string, unknown>) => {
+      if (!active) return;
       setState({ status: "loading" });
       try {
+        if (active.type === "own") {
+          setState({ status: "done", result: (await runOnOwnAi(slug, input, active.config)) as T });
+          return;
+        }
         const res = await fetch(`/api/tools/${slug}`, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -37,11 +75,17 @@ export function useTool<T>(slug: ToolSlug) {
         }
         if (data.remaining) setRemaining(data.remaining);
         setState({ status: "done", result: data.result as T });
-      } catch {
-        setState({ status: "error", error: "Network problem. Check your connection and try again." });
+      } catch (err) {
+        setState({
+          status: "error",
+          error:
+            err instanceof GenerationError
+              ? err.message
+              : "Network problem. Check your connection and try again.",
+        });
       }
     },
-    [slug, setRemaining],
+    [slug, active, setRemaining],
   );
 
   return { state, run };
@@ -52,7 +96,7 @@ export function ToolFrame<T>({
   state,
   onSubmit,
   cta,
-  wait = "This usually takes 15 to 40 seconds.",
+  wait: hostedWait = "This usually takes 15 to 40 seconds.",
   children,
   render,
 }: {
@@ -65,9 +109,15 @@ export function ToolFrame<T>({
   render: (result: T) => React.ReactNode;
 }) {
   const tool = getTool(slug)!;
-  const { ready, user, remaining, signIn } = useApp();
-  const left = user ? null : (remaining?.[slug] ?? FREE_USES_PER_TOOL);
+  const { user, remaining, authEnabled, signIn } = useApp();
+  const { loaded, active, missing } = useAi();
+  const ready = loaded;
+  const own = active?.type === "own" ? active : null;
+  // The free-run allowance only applies to the built-in AI.
+  const left = active?.type !== "hosted" || user ? null : (remaining?.[slug] ?? FREE_USES_PER_TOOL);
   const gated = ready && left === 0;
+  const unset = ready && !active;
+  const wait = own?.preset.local ? "Running on your machine. Local models can take a few minutes." : hostedWait;
   const loading = state.status === "loading";
 
   return (
@@ -79,22 +129,43 @@ export function ToolFrame<T>({
         className="mt-8 space-y-4"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!loading && !gated) onSubmit();
+          if (!loading && !gated && !unset) onSubmit();
         }}
       >
         {children}
 
-        {gated ? (
+        {unset ? (
+          <div className="rounded-2xl border border-lime/40 bg-lime/5 p-5">
+            <p className="font-medium">{missing ?? "Choose the AI that runs DoShorts."}</p>
+            <p className="mt-1 text-sm text-mute">
+              Use a local model with Ollama or LM Studio, or your own key for a hosted one. Your key stays in this browser.
+            </p>
+            <Link
+              href="/settings"
+              className="mt-4 inline-block rounded-full bg-lime px-5 py-2.5 text-sm font-semibold text-ink hover:opacity-90"
+            >
+              Open AI settings
+            </Link>
+          </div>
+        ) : gated ? (
           <div className="rounded-2xl border border-lime/40 bg-lime/5 p-5">
             <p className="font-medium">You have used your {FREE_USES_PER_TOOL} free runs of {tool.name}.</p>
-            <p className="mt-1 text-sm text-mute">Sign in with Google to keep going. DoShorts stays free.</p>
-            <button
-              type="button"
-              onClick={signIn}
-              className="mt-4 flex items-center gap-2.5 rounded-full bg-text px-5 py-2.5 text-sm font-semibold text-ink hover:bg-white"
-            >
-              <GoogleMark /> Continue with Google
-            </button>
+            <p className="mt-1 text-sm text-mute">
+              {authEnabled ? "Sign in with Google to keep going, or " : "To keep going, "}
+              <Link href="/settings" className="underline underline-offset-4 hover:text-text">
+                use your own AI
+              </Link>{" "}
+              with no limit and no account.
+            </p>
+            {authEnabled && (
+              <button
+                type="button"
+                onClick={signIn}
+                className="mt-4 flex items-center gap-2.5 rounded-full bg-text px-5 py-2.5 text-sm font-semibold text-ink hover:bg-white"
+              >
+                <GoogleMark /> Continue with Google
+              </button>
+            )}
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1">
@@ -107,7 +178,16 @@ export function ToolFrame<T>({
             </button>
             {ready && left != null && (
               <p className="text-sm text-mute">
-                {left} of {FREE_USES_PER_TOOL} free runs left, then sign in with Google.
+                {left} of {FREE_USES_PER_TOOL} free runs left{authEnabled ? ", then sign in with Google" : ""}.
+              </p>
+            )}
+            {own && (
+              <p className="text-sm text-mute">
+                Runs on{" "}
+                <Link href="/settings" className="text-text underline-offset-4 hover:underline">
+                  {own.preset.name} · {own.config.model}
+                </Link>
+                {own.preset.local ? ", on your machine." : ", with your key."}
               </p>
             )}
           </div>

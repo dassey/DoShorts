@@ -103,7 +103,8 @@ export async function fetchTranscript(id: string): Promise<string | null> {
       tracks.find((t) => t.languageCode.startsWith("en") && t.kind !== "asr") ??
       tracks.find((t) => t.languageCode.startsWith("en")) ??
       tracks[0];
-    if (!track) return null;
+    // Only ever follow a caption URL that points back at YouTube.
+    if (!track || !/(^|\.)youtube\.com$/.test(new URL(track.baseUrl).hostname)) return null;
     const data = await getJson<{ events?: { tStartMs?: number; segs?: { utf8: string }[] }[] }>(
       `${track.baseUrl}&fmt=json3`,
     );

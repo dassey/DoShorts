@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import { AiProvider } from "@/components/AiProvider";
 import { AppProvider } from "@/components/AppProvider";
 import { Shell } from "@/components/Shell";
 import "./globals.css";
@@ -18,7 +19,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
       <body className="min-h-dvh">
         <AppProvider>
-          <Shell>{children}</Shell>
+          <AiProvider>
+            <Shell>{children}</Shell>
+          </AiProvider>
         </AppProvider>
       </body>
     </html>
