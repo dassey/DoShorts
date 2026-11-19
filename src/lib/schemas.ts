@@ -116,10 +116,11 @@ export const outputs = {
     style: z.string().describe("One line applied to every shot so they look like one video: medium, palette, lens, mood"),
     shots: z.array(
       z.object({
-        seconds: z.number().describe("Whole seconds, 2 to 5"),
+        seconds: z.number().describe("Whole seconds, 3 to 8"),
         caption: z.string().describe("The exact words spoken during this shot"),
         visual: z.string().describe("Self-contained prompt for an image or video model"),
         motion: z.string().describe("One sentence of camera or subject movement"),
+        sound: z.string().describe("One sentence of the ambient sound and sound effects heard, no speech or music"),
       }),
     ),
   }),

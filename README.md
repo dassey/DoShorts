@@ -19,20 +19,23 @@ Results hand off between tools (a trending topic opens in Copilot, a Copilot tit
 Generate renders the Short on your own machine with [ComfyUI](https://github.com/comfyanonymous/ComfyUI). It needs DoShorts to be running on the same machine or network as ComfyUI.
 
 1. **One-time setup.** Enter ComfyUI's IP address, port and models folder. They are saved in the browser.
-2. **Shot list.** Your AI splits the script into shots of 2 to 5 seconds, each with a caption and a prompt. Every field is editable.
+2. **Shot list.** Your AI splits the script into shots of about 5 seconds, each with a caption, a prompt, a motion line and a background sound. Every field is editable.
 3. **Workflow and models.** Pick a workflow. Each model slot shows the file the workflow expects and a dropdown of what you have installed. For a missing file it shows the official download link and the exact folder to save it in.
 4. **Render.** Each shot becomes a clip with its caption burned in, then the clips are joined into one mp4 in ComfyUI's `output/DoShorts/` folder. A failed shot can be fixed and re-rendered without redoing the rest.
 
 | Workflow | Follows ComfyUI's bundled blueprint | Models |
 | --- | --- | --- |
-| Video + sound, MiniMax H3 Turbo (default) | Image to Video (MiniMax H3), Turbo LoRA path, text only | H3 diffusion model, Turbo LoRA, `qwen3vl_32b` text encoder, video and audio VAEs |
+| Video + sound, FastH3 (default) | FastH3 workflow from docs.comfy.org | `fastvideo_fasth3_8step_v2` diffusion model, `qwen3vl_32b` text encoder, H3 video and audio VAEs |
+| Video + sound, MiniMax H3 Turbo | Image to Video (MiniMax H3), Turbo LoRA path | H3 diffusion model, 8-step Turbo LoRA, same text encoder and VAEs |
 | Stills, Z-Image Turbo | Text to Image (Z-Image-Turbo) | `z_image_turbo_bf16`, `qwen_3_4b`, `ae` |
 | Video clips, Wan 2.2 | Text to Video (Wan 2.2), 4-step LoRA path | Wan 2.2 high and low noise models, two LoRAs, `umt5_xxl`, `wan_2.1_vae` |
 | Stills, your own checkpoint | none (the classic checkpoint graph) | Any SD or SDXL checkpoint |
 
 **No custom nodes.** Every node used ships with ComfyUI, including caption burn-in (`TextOverlay`) and assembly (`CreateVideo`, `ConcatenateVideo`, `SaveVideo`). These are recent additions, so use an up-to-date ComfyUI. Workflows live in `src/lib/comfy.ts`.
 
-Sound: MiniMax H3 generates a soundtrack with each clip; the other workflows are silent. None of them produces a voiceover, since ComfyUI has no built-in text-to-speech node. Record the captions yourself, or add audio in an editor.
+**Sound.** The two H3 workflows generate sound with each clip, with three settings: voiceover plus background sound (the caption is spoken by an off-screen narrator), background sound only, or silent. Prompts for H3 follow MiniMax's official three-field format (`integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music`), and each shot shows the exact text sent. Each shot's voiceover is generated separately, so the voice can vary between shots; use background only and record the voiceover yourself if it does. The other workflows are silent.
+
+H3 is trained on clips of about 5 to 15 seconds, so the H3 workflows render every shot at 5 seconds or more.
 
 The page reaches ComfyUI through a small relay in the DoShorts server (`/api/comfy`), because ComfyUI refuses browser requests from other sites. So ComfyUI needs no special launch flags. The relay only runs when DoShorts is used locally, only accepts requests from the DoShorts page, only contacts loopback or private-network addresses, and only forwards the six ComfyUI endpoints Generate uses. Set `DOSHORTS_COMFY_BRIDGE=0` to turn it off.
 
@@ -94,4 +97,4 @@ Optional environment (see `.env.example`):
 
 ## Not in scope
 
-DoShorts does not generate voiceover or music, and does not upload to YouTube. It does not run inside YouTube Studio, and does not do keyword-volume research, competitor analytics, bulk tag editing, or live title and thumbnail split-testing.
+DoShorts does not generate music, and does not upload to YouTube. It does not run inside YouTube Studio, and does not do keyword-volume research, competitor analytics, bulk tag editing, or live title and thumbnail split-testing.

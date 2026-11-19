@@ -117,10 +117,13 @@ Vary the formats across the week so no two days feel the same, and order them so
 If the material is a script, keep its wording and order, and split its voiceover across consecutive shots. If it is only a topic, first write a tight script of about ${seconds} seconds that opens on the hook, then split that.
 
 For each shot:
-- seconds: a whole number from 2 to 5. Cut to a new shot rather than holding longer.
-- caption: the exact words spoken during the shot, at most 12 words, paced at about 2.5 words per second.
+- seconds: a whole number from 3 to 8; make most shots 5. Cut to a new shot rather than holding longer.
+- caption: the exact words spoken during the shot, paced at about 2.5 words per second, so a 5-second shot carries at most 12 words.
 - visual: a self-contained prompt describing only what is seen: subject, action, setting, lighting, framing for a tall vertical frame. Each prompt must make sense alone, so restate the subject instead of writing "the same man". No on-screen text, captions, logos, brand names or real people.
 - motion: one sentence of camera or subject movement, for when the shot is rendered as video.
+- sound: one sentence naming the ambient sound and sound effects heard in the shot. No speech, no music.
+
+Write visual, motion and sound in English.
 
 Also give a title, and one style line that is applied to every shot so they look like one video.`,
 };
@@ -167,7 +170,7 @@ const finalizers: { [K in ToolSlug]: (data: Out<K>, ctx: ToolContext, sources: S
   planner: (d) => ({ ...d, days: d.days.slice(0, 7).map((day, i) => ({ ...day, day: i + 1 })) }),
   generate: (d) => ({
     ...d,
-    shots: d.shots.slice(0, 30).map((s) => ({ ...s, seconds: Math.min(5, Math.max(2, Math.round(s.seconds) || 3)) })),
+    shots: d.shots.slice(0, 30).map((s) => ({ ...s, seconds: Math.min(10, Math.max(2, Math.round(s.seconds) || 5)) })),
   }),
 };
 

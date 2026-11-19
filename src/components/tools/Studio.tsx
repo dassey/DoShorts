@@ -17,6 +17,7 @@ import {
   type ComfyInfo,
   type ModelFolder,
   type ModelSlot,
+  type SoundMode,
 } from "@/lib/comfy";
 import type { Storyboard } from "@/lib/schemas";
 import { Card, Field, inputClass } from "../ui";
@@ -64,6 +65,8 @@ export function Studio({ board }: { board: Storyboard }) {
   const [sizeIndex, setSizeIndex] = useState(0);
   const [negative, setNegative] = useState<string | null>(null);
   const [caption, setCaption] = useState<CaptionStyle>({ on: true, position: "bottom", size: 4.5 });
+  const [soundMode, setSoundMode] = useState<SoundMode>("voiceover");
+  const [voice, setVoice] = useState("a warm, clear, energetic adult voice speaking at a brisk pace");
 
   const [running, setRunning] = useState(false);
   const [final, setFinal] = useState<{ file?: ComfyFile; error?: string }>({});
@@ -125,7 +128,8 @@ export function Studio({ board }: { board: Storyboard }) {
       workflow.slots.map((slot) => {
         const have = installed[slot.folder] ?? [];
         const pick = picks[slot.id];
-        const value = pick && have.includes(pick) ? pick : slot.expected && have.includes(slot.expected) ? slot.expected : "";
+        const official = [slot.expected, ...(slot.also ?? [])].find((m) => m && have.includes(m));
+        const value = pick && have.includes(pick) ? pick : (official ?? "");
         return [slot.id, value];
       }),
     );
@@ -133,10 +137,13 @@ export function Studio({ board }: { board: Storyboard }) {
 
   const missing = workflow.slots.filter((s) => !models[s.id]);
   const ready = Boolean(info) && missing.length === 0;
-  const total = shots.reduce((sum, s) => sum + s.seconds, 0);
+  /** The length a shot actually renders at with this workflow. */
+  const lengthOf = (s: Shot) => Math.min(workflow.seconds[1], Math.max(workflow.seconds[0], s.seconds));
+  const total = shots.reduce((sum, s) => sum + lengthOf(s), 0);
   const doneCount = shots.filter((s) => s.state === "done").length;
 
-  const promptFor = (s: Shot) => [s.visual, workflow.kind === "video" ? s.motion : "", style].filter(Boolean).join(" ");
+  const promptFor = (s: Shot) =>
+    workflow.prompt({ style, visual: s.visual, motion: s.motion, sound: s.sound, caption: s.caption, soundMode, voice });
 
   const patchShot = (i: number, patch: Partial<Shot>) =>
     setShots((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
@@ -157,9 +164,10 @@ export function Studio({ board }: { board: Storyboard }) {
     try {
       const graph = shotGraph(
         workflow,
-        { prompt: promptFor(shot), seconds: shot.seconds, width, height, seed: shot.seed, models, negative: negativeText },
+        { prompt: promptFor(shot), seconds: lengthOf(shot), width, height, seed: shot.seed, models, negative: negativeText },
         { text: shot.caption, style: caption },
         `DoShorts/${runId}/shot_${String(i + 1).padStart(2, "0")}`,
+        soundMode === "silent",
       );
       const file = await render(conn, graph, signal);
       patchShot(i, { state: "done", file });
@@ -270,6 +278,7 @@ export function Studio({ board }: { board: Storyboard }) {
                 onChange={() => { save({ ...saved, workflow: w.id }); setSizeIndex(0); setNegative(null); invalidateAll(); }} />
               <span className="block text-sm font-semibold">{w.name}</span>
               <span className="mt-1 block text-xs leading-relaxed text-mute">{w.summary}</span>
+              <span className="mt-1.5 block font-mono text-[11px] text-mute">{w.seconds[0]}–{w.seconds[1]}s per shot</span>
             </label>
           ))}
         </div>
@@ -309,7 +318,7 @@ export function Studio({ board }: { board: Storyboard }) {
                     <code className="rounded bg-raised px-1.5 py-0.5 font-mono text-xs text-text">{savePath(slot)}</code>, then Reconnect.
                   </p>
                 )}
-                {value && slot.expected && value !== slot.expected && (
+                {value && slot.expected && value !== slot.expected && !slot.also?.includes(value) && (
                   <p className="mt-1.5 text-xs text-mute">Using a different file than the workflow was designed for. It must be the same kind of model.</p>
                 )}
               </div>
@@ -334,6 +343,24 @@ export function Studio({ board }: { board: Storyboard }) {
               </select>
             </Field>
           </div>
+          {workflow.sound && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <Field label="Sound">
+                <select className={selectClass} value={soundMode} disabled={running}
+                  onChange={(e) => { setSoundMode(e.target.value as SoundMode); invalidateAll(); }}>
+                  <option value="voiceover">Voiceover + background sound</option>
+                  <option value="background">Background sound only</option>
+                  <option value="silent">Silent</option>
+                </select>
+              </Field>
+              {soundMode === "voiceover" && (
+                <Field label="Narrator voice" hint="same description for every shot">
+                  <input className={`${inputClass} text-sm`} value={voice} disabled={running}
+                    onChange={(e) => { setVoice(e.target.value); invalidateAll(); }} />
+                </Field>
+              )}
+            </div>
+          )}
         </Card>
       </Step>
 
@@ -365,14 +392,15 @@ export function Studio({ board }: { board: Storyboard }) {
                   )}
                 </div>
                 <label className="mt-2 flex items-center gap-1.5 text-xs text-mute">
-                  <input className="w-12 rounded-md border border-line bg-ink px-1.5 py-1 text-center font-mono text-text" type="number" min={1} max={5}
+                  <input className="w-12 rounded-md border border-line bg-ink px-1.5 py-1 text-center font-mono text-text" type="number" min={1} max={10}
                     value={s.seconds} disabled={running}
-                    onChange={(e) => editShot(i, { seconds: Math.min(5, Math.max(1, Math.round(Number(e.target.value)) || 1)) })} />
+                    onChange={(e) => editShot(i, { seconds: Math.min(10, Math.max(1, Math.round(Number(e.target.value)) || 1)) })} />
                   seconds
                 </label>
+                {lengthOf(s) !== s.seconds && <p className="mt-1 text-xs text-amber">renders as {lengthOf(s)}s</p>}
               </div>
               <div className="min-w-0 space-y-3">
-                <Field label="Caption" hint="burned into the clip">
+                <Field label="Caption" hint={workflow.sound && soundMode === "voiceover" ? "burned in, and spoken as the voiceover" : "burned into the clip"}>
                   <input className={inputClass} value={s.caption} disabled={running} onChange={(e) => editShot(i, { caption: e.target.value })} />
                 </Field>
                 <Field label="Prompt">
@@ -383,6 +411,15 @@ export function Studio({ board }: { board: Storyboard }) {
                     <input className={`${inputClass} text-sm`} value={s.motion} disabled={running} onChange={(e) => editShot(i, { motion: e.target.value })} />
                   </Field>
                 )}
+                {workflow.sound && soundMode !== "silent" && (
+                  <Field label="Background sound">
+                    <input className={`${inputClass} text-sm`} value={s.sound} disabled={running} onChange={(e) => editShot(i, { sound: e.target.value })} />
+                  </Field>
+                )}
+                <details className="text-sm">
+                  <summary className="cursor-pointer text-mute hover:text-text">Exact text sent to the model</summary>
+                  <pre className="mt-2 overflow-x-auto rounded-lg bg-ink p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-mute">{promptFor(s)}</pre>
+                </details>
                 {s.error && <p role="alert" className="text-sm text-hot">{s.error}</p>}
                 {s.state === "done" && !running && (
                   <button type="button" onClick={() => run(i)} className={linkClass}>
@@ -433,9 +470,11 @@ export function Studio({ board }: { board: Storyboard }) {
                   Download mp4
                 </a>
                 <p className="mt-4 text-mute">
-                  {workflow.sound
-                    ? "The sound was generated by the model from each prompt. It is not a voiceover: record the captions yourself, or add one in your editor."
-                    : "It has no sound. Record the captions as your voiceover over it, or add audio in your editor."}
+                  {!workflow.sound || soundMode === "silent"
+                    ? "It has no sound. Record the captions as your voiceover over it, or add audio in your editor."
+                    : soundMode === "voiceover"
+                      ? "Each shot's voiceover was generated separately, so the voice can vary between shots. If it does, switch Sound to background only and record the voiceover yourself."
+                      : "It has background sound only. Record the captions as your voiceover over it."}
                 </p>
               </div>
             </div>
