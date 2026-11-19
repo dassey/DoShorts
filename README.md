@@ -27,13 +27,16 @@ Generate renders the Short on your own machine with [ComfyUI](https://github.com
 | --- | --- | --- |
 | Video + sound, FastH3 (default) | FastH3 workflow from docs.comfy.org | `fastvideo_fasth3_8step_v2` diffusion model, `qwen3vl_32b` text encoder, H3 video and audio VAEs |
 | Video + sound, MiniMax H3 Turbo | Image to Video (MiniMax H3), Turbo LoRA path | H3 diffusion model, 8-step Turbo LoRA, same text encoder and VAEs |
+| Video + your voice, MiniMax H3 Reference | MiniMax H3 Reference to Video (docs.comfy.org) | H3 `ref2va` diffusion model, 4-step LoRA, same text encoder and VAEs |
 | Stills, Z-Image Turbo | Text to Image (Z-Image-Turbo) | `z_image_turbo_bf16`, `qwen_3_4b`, `ae` |
 | Video clips, Wan 2.2 | Text to Video (Wan 2.2), 4-step LoRA path | Wan 2.2 high and low noise models, two LoRAs, `umt5_xxl`, `wan_2.1_vae` |
 | Stills, your own checkpoint | none (the classic checkpoint graph) | Any SD or SDXL checkpoint |
 
 **No custom nodes.** Every node used ships with ComfyUI, including caption burn-in (`TextOverlay`) and assembly (`CreateVideo`, `ConcatenateVideo`, `SaveVideo`). These are recent additions, so use an up-to-date ComfyUI. Workflows live in `src/lib/comfy.ts`.
 
-**Sound.** The two H3 workflows generate sound with each clip, with three settings: voiceover plus background sound (the caption is spoken by an off-screen narrator), background sound only, or silent. Prompts for H3 follow MiniMax's official three-field format (`integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music`), and each shot shows the exact text sent. Each shot's voiceover is generated separately, so the voice can vary between shots; use background only and record the voiceover yourself if it does. The other workflows are silent.
+**Sound.** The two H3 workflows generate sound with each clip, with three settings: voiceover plus background sound (the caption is spoken by an off-screen narrator), background sound only, or silent. Prompts for H3 follow MiniMax's official three-field format (`integrated_multimodal_description`, `overall_soundscape`, `non_diegetic_music`), and each shot shows the exact text sent. The other workflows are silent.
+
+**Narrator voice.** Sliders for age, pitch, pace and energy, plus voice type and accent, build the voice description that goes into every shot. On FastH3 and H3 Turbo each shot is voiced separately from that description, so the voice can drift between shots. The H3 Reference workflow holds one voice: click "Create this voice" to render a short sample from the sliders, or upload a recording of a real voice, and every shot copies that recording's voice. Only upload a voice you have the right to use. ComfyUI's ready-made voice design and cloning nodes are paid cloud services, so DoShorts does not use them; this runs locally.
 
 H3 is trained on clips of about 5 to 15 seconds, so the H3 workflows render every shot at 5 seconds or more.
 

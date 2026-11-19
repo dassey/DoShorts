@@ -17,7 +17,11 @@ const ROUTES: { method: "GET" | "POST"; path: RegExp }[] = [
   { method: "GET", path: /^view$/ },
   { method: "POST", path: /^prompt$/ },
   { method: "POST", path: /^interrupt$/ },
+  // A voice sample for cloning. Passed through as the browser's form upload.
+  { method: "POST", path: /^upload\/image$/ },
 ];
+
+const MAX_UPLOAD = 25 * 1024 * 1024;
 
 const SAFE_TYPES = /^(application\/json|image\/(png|jpeg|webp|gif)|video\/(mp4|webm|quicktime|x-matroska)|audio\/[\w.+-]+)\b/i;
 
@@ -64,16 +68,27 @@ async function relay(request: Request, { params }: { params: Promise<{ path: str
     if (key !== "h" && key !== "p") target.searchParams.append(key, value);
   });
 
+  const contentType = request.headers.get("content-type") ?? "";
+  const isUpload = path === "upload/image";
+  if (isUpload && !contentType.startsWith("multipart/form-data")) return refuse("Expected a file upload.", 400);
+  if (isUpload && Number(request.headers.get("content-length") ?? 0) > MAX_UPLOAD) {
+    return refuse("That file is too large. Use a sample under 25 MB.", 413);
+  }
+
   let upstream: Response;
   try {
     const range = request.headers.get("range");
+    const body = request.method !== "POST" ? undefined : isUpload ? await request.arrayBuffer() : await request.text();
+    if (body instanceof ArrayBuffer && body.byteLength > MAX_UPLOAD) {
+      return refuse("That file is too large. Use a sample under 25 MB.", 413);
+    }
     upstream = await fetch(target, {
       method: request.method,
       headers: {
-        ...(request.method === "POST" ? { "content-type": "application/json" } : {}),
+        ...(request.method === "POST" ? { "content-type": isUpload ? contentType : "application/json" } : {}),
         ...(range ? { range } : {}),
       },
-      body: request.method === "POST" ? await request.text() : undefined,
+      body,
       redirect: "error",
       cache: "no-store",
       signal: AbortSignal.timeout(60_000),

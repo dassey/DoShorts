@@ -32,6 +32,8 @@ export type ShotRequest = {
   seed: number;
   models: Record<string, string>;
   negative: string;
+  /** An audio file in ComfyUI whose voice the narrator should have, e.g. "DoShorts/me.mp3 [input]". */
+  voiceRef?: string;
 };
 
 export type SoundMode = "voiceover" | "background" | "silent";
@@ -46,9 +48,46 @@ export type PromptParts = {
   /** The words spoken during the shot. */
   caption: string;
   soundMode: SoundMode;
-  /** How the narrator sounds, e.g. "a warm, clear adult voice". */
+  /** Who the narrator is and how they sound, e.g. "an adult woman with a warm, medium-pitched voice". */
   voice: string;
+  /** A voice reference audio is attached to this shot as <Audio 1>. */
+  hasVoiceRef?: boolean;
 };
+
+// ---------- Voice design ----------
+
+export type VoiceDesign = {
+  who: "woman" | "man" | "person";
+  age: number;
+  pitch: number;
+  pace: number;
+  energy: number;
+  accent: string;
+};
+
+export const DEFAULT_VOICE: VoiceDesign = { who: "woman", age: 1, pitch: 2, pace: 3, energy: 3, accent: "" };
+
+/** The slider scales, low to high. Each position is a phrase the model understands. */
+export const VOICE_SCALES = {
+  age: ["teenage", "young adult", "adult", "middle-aged", "elderly"],
+  pitch: ["very deep", "deep", "medium-pitched", "high", "very high"],
+  pace: ["a very slow pace", "a slow pace", "a natural pace", "a brisk pace", "a fast pace"],
+  energy: ["calm, soothing", "relaxed", "conversational", "upbeat", "excited, punchy"],
+} as const;
+
+export const ACCENTS = ["", "American", "British", "Australian", "Irish", "Scottish", "Indian", "Southern American"];
+
+/** Turns the sliders into the voice description used in every shot's prompt. */
+export function describeVoice(v: VoiceDesign): string {
+  const age = VOICE_SCALES.age[v.age];
+  const article = /^[aeiou]/.test(age) ? "an" : "a";
+  return (
+    `${article} ${age} ${v.who} with a ${VOICE_SCALES.pitch[v.pitch]}, ${VOICE_SCALES.energy[v.energy]} voice, ` +
+    `speaking at ${VOICE_SCALES.pace[v.pace]}${v.accent ? ` with ${/^[AEIOU]/.test(v.accent) ? "an" : "a"} ${v.accent} accent` : ""}`
+  );
+}
+
+export const VOICE_SAMPLE_LINE = "This is the voice that will narrate your video. Short, clear, and easy to follow.";
 
 export type Workflow = {
   id: string;
@@ -63,6 +102,8 @@ export type Workflow = {
   negative: string;
   /** The model also generates sound, including speech, for each clip. */
   sound?: boolean;
+  /** The model can copy a voice from a reference recording, so one voice holds across every shot. */
+  voiceRef?: boolean;
   /** Shot lengths the model handles well, in seconds. Shots outside it are rendered at the nearest end. */
   seconds: [number, number];
   /** Writes the text sent to the model for one shot. */
@@ -101,21 +142,41 @@ const sentence = (text: string) => {
  * any spoken line in a <d> tag, then the ambient sound, then the score. It has
  * no negative prompt, so each field states what should be there.
  */
-function h3Prompt(p: PromptParts): string {
+function h3Shot(p: PromptParts): string {
   const spoken = p.soundMode === "voiceover" && p.caption.trim();
-  const shot = [
+  const narrator = p.hasVoiceRef
+    ? "An off-screen narrator (S1) says in an off-screen voiceover, in the voice timbre referenced from <Audio 1>:"
+    : `The narrator, ${p.voice.trim() || "an adult with a clear voice"} (S1), says in an off-screen voiceover:`;
+  return [
     sentence(p.style),
     sentence(p.visual),
     sentence(p.motion),
     spoken
-      ? `A narrator with ${p.voice.trim() || "a clear adult voice"} (S1) says in an off-screen voiceover: <d>[English] ${sentence(p.caption)}</d> while everyone on screen keeps their lips completely closed.`
+      ? `${narrator} <d>[English] ${sentence(p.caption)}</d> while everyone on screen keeps their lips completely closed.`
       : "",
   ]
     .filter(Boolean)
     .join(" ");
-  const soundscape =
-    p.soundMode === "silent" ? "N/A" : sentence(p.sound) || "The natural ambient sound of the scene.";
-  return `integrated_multimodal_description: [Shot 1] ${shot}\noverall_soundscape: ${soundscape}\nnon_diegetic_music: N/A`;
+}
+
+const h3Soundscape = (p: PromptParts) =>
+  p.soundMode === "silent" ? "N/A" : sentence(p.sound) || "The natural ambient sound of the scene.";
+
+function h3Prompt(p: PromptParts): string {
+  return `integrated_multimodal_description: [Shot 1] ${h3Shot(p)}\noverall_soundscape: ${h3Soundscape(p)}\nnon_diegetic_music: N/A`;
+}
+
+/** Reference mode uses the guide's six-section layout, which is where <Audio 1> is given its role. */
+function h3RefPrompt(p: PromptParts): string {
+  if (!p.hasVoiceRef || p.soundMode !== "voiceover") return h3Prompt(p);
+  return [
+    "subject_definitions:\n<Audio 1> is the voice-timbre reference for the off-screen narrator (S1).",
+    `summary:\n[reference generation + audio reference] ${sentence(p.visual)} <Audio 1> guides the narrator's voice timbre.`,
+    "retention_analysis:\n<Audio 1>: reference - its voice timbre guides the narrator's delivery without copying the original words.",
+    `detailed_description:\n[Shot 1] ${h3Shot(p)}`,
+    `overall_soundscape:\n${h3Soundscape(p)}`,
+    "non_diegetic_music:\nN/A",
+  ].join("\n\n");
 }
 
 const H3 = "https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main";
@@ -125,19 +186,27 @@ const H3_SHARED: ModelSlot[] = [
   { id: "audioVae", label: "Audio VAE", folder: "vae", expected: "minimax_h3_audio_vae_fp32.safetensors", url: `${H3}/vae/minimax_h3_audio_vae_fp32.safetensors` },
 ];
 
-/** The part every H3 workflow shares: text and latent setup, 8-step sampling, video and audio decode. */
-function h3Render(g: GraphBuilder, s: ShotRequest, model: Ref, fps: number) {
+/** The part every H3 workflow shares: text and latent setup, sampling, video and audio decode. */
+function h3Render(g: GraphBuilder, s: ShotRequest, model: Ref, fps: number, opts: { steps: number; reference?: boolean }) {
   const clip = g.add("CLIPLoader", { clip_name: s.models.clip, type: "minimax", device: "default" });
   const vae = g.add("VAELoader", { vae_name: s.models.vae });
   const audioVae = g.add("VAELoader", { vae_name: s.models.audioVae });
   // H3 wants a frame count on its 17k+5 grid.
   const raw = Math.max(5, Math.round(s.seconds * fps));
   const length = raw + ((5 - (raw % 17) + 17) % 17);
+  const canvas = { clip, vae, prompt: s.prompt, width: s.width, height: s.height, length };
   // No first frame is connected, so the clip is generated from the text alone.
-  const setup = g.add("MiniMaxH3ImageToVideo", { clip, vae, prompt: s.prompt, width: s.width, height: s.height, length });
+  const setup = opts.reference
+    ? g.add("MiniMaxH3ReferenceToVideo", {
+        ...canvas,
+        audio_vae: audioVae,
+        ref_image_size: "match",
+        ...(s.voiceRef ? { "ref_audios.ref_audio_0": g.add("LoadAudio", { audio: s.voiceRef }) } : {}),
+      })
+    : g.add("MiniMaxH3ImageToVideo", canvas);
   const noise = g.add("RandomNoise", { noise_seed: s.seed });
   const sampler = g.add("KSamplerSelect", { sampler_name: "res_multistep" });
-  const sigmas = g.add("BasicScheduler", { model, scheduler: "simple", steps: 8, denoise: 1 });
+  const sigmas = g.add("BasicScheduler", { model, scheduler: "simple", steps: opts.steps, denoise: 1 });
   const guider = g.add("BasicGuider", { model, conditioning: setup });
   const sampled = g.add("SamplerCustomAdvanced", { noise, guider, sampler, sigmas, latent_image: out(setup, 1) });
   return {
@@ -171,7 +240,7 @@ export const WORKFLOWS: Workflow[] = [
         model: shifted, selection: "vsa", "selection.keep_percent": 10, start_percent: 0.2, end_percent: 1,
         dense_blocks: "", min_tokens: 12288, extra_tokens: 256, sink_conditioning: "exact_kv_and_rows", verbose: false,
       });
-      return h3Render(g, s, model, this.fps);
+      return h3Render(g, s, model, this.fps, { steps: 8 });
     },
   },
   {
@@ -194,7 +263,31 @@ export const WORKFLOWS: Workflow[] = [
     frames(g, s) {
       const base = g.add("UNETLoader", { unet_name: s.models.unet, weight_dtype: "default" });
       const model = g.add("LoraLoaderModelOnly", { model: base, lora_name: s.models.lora, strength_model: 1 });
-      return h3Render(g, s, model, this.fps);
+      return h3Render(g, s, model, this.fps, { steps: 8 });
+    },
+  },
+  {
+    id: "h3ref",
+    name: "Video + your voice · MiniMax H3 Reference",
+    kind: "video",
+    summary: "Like H3, but the narrator copies one voice in every shot: a voice you design, or a recording you upload.",
+    basedOn: "MiniMax H3 Reference to Video (docs.comfy.org)",
+    sound: true,
+    voiceRef: true,
+    seconds: [5, 10],
+    prompt: h3RefPrompt,
+    slots: [
+      { id: "unet", label: "Diffusion model", folder: "diffusion_models", expected: "minimax_h3_ref2va_pruned_int8_convrot.safetensors", url: `${H3}/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors` },
+      { id: "lora", label: "4-step LoRA", folder: "loras", expected: "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors", url: `${H3}/loras/minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors` },
+      ...H3_SHARED,
+    ],
+    sizes: [[768, 1344], [544, 960]],
+    fps: 24,
+    negative: "",
+    frames(g, s) {
+      const base = g.add("UNETLoader", { unet_name: s.models.unet, weight_dtype: "default" });
+      const model = g.add("LoraLoaderModelOnly", { model: base, lora_name: s.models.lora, strength_model: 1 });
+      return h3Render(g, s, model, this.fps, { steps: 4, reference: true });
     },
   },
   {
@@ -325,15 +418,39 @@ export function shotGraph(
   return g.graph;
 }
 
+/**
+ * Renders a short clip of the designed voice reading a sample line and saves only its audio.
+ * That recording then serves as the voice reference for every shot.
+ */
+export function voiceSampleGraph(workflow: Workflow, models: Record<string, string>, voice: string, seed: number, filePrefix: string): Graph {
+  const g = new GraphBuilder();
+  const prompt = workflow.prompt({
+    style: "",
+    visual: "A plain dark studio backdrop, still and empty.",
+    motion: "The camera is locked off.",
+    sound: "A silent recording booth with no background sound.",
+    caption: VOICE_SAMPLE_LINE,
+    soundMode: "voiceover",
+    voice,
+  });
+  // The picture is thrown away, so render it as small as the model allows.
+  const { audio } = workflow.frames(g, { prompt, seconds: 6, width: 384, height: 672, seed, models, negative: "" });
+  if (!audio) throw new ComfyError("This workflow does not generate sound.");
+  g.add("SaveAudioAdvanced", { audio, filename_prefix: filePrefix, format: "mp3", "format.quality": "V0" });
+  return g.graph;
+}
+
 export type ComfyFile = { filename: string; subfolder: string; type: string };
+
+/** How ComfyUI's loader nodes address a file outside the default input folder. */
+export const fileRef = (f: ComfyFile) => `${f.subfolder ? `${f.subfolder}/` : ""}${f.filename} [${f.type}]`;
 
 /** Joins finished shot clips, in order, into one mp4. */
 export function joinGraph(clips: ComfyFile[], filePrefix: string): Graph {
   const g = new GraphBuilder();
   const videos: Record<string, Ref> = {};
   clips.forEach((clip, i) => {
-    const path = clip.subfolder ? `${clip.subfolder}/${clip.filename}` : clip.filename;
-    videos[`videos.video${i}`] = g.add("LoadVideo", { file: `${path} [${clip.type}]` });
+    videos[`videos.video${i}`] = g.add("LoadVideo", { file: fileRef(clip) });
   });
   const joined = g.add("ConcatenateVideo", { ...videos, codec: "auto" });
   g.add("SaveVideo", { video: joined, filename_prefix: filePrefix, format: "mp4", "format.codec": "h264" });
@@ -400,13 +517,27 @@ export const installedModels = (c: ComfyConnection, folder: ModelFolder) => call
 export const fileUrl = (c: ComfyConnection, f: ComfyFile) =>
   bridge(c, "view", { filename: f.filename, subfolder: f.subfolder, type: f.type });
 
+/** Puts a voice recording into ComfyUI's input folder. */
+export async function uploadVoice(c: ComfyConnection, file: File): Promise<ComfyFile> {
+  const form = new FormData();
+  // ComfyUI's upload endpoint names its file field "image" whatever the file is.
+  form.append("image", file, file.name.replace(/[^\w.-]+/g, "_"));
+  form.append("type", "input");
+  form.append("subfolder", "DoShorts");
+  form.append("overwrite", "true");
+  const res = await fetch(bridge(c, "upload/image"), { method: "POST", body: form }).catch(() => null);
+  const data = await res?.json().catch(() => null);
+  if (!res?.ok || !data?.name) throw new ComfyError(data?.error ?? "The upload failed.");
+  return { filename: data.name, subfolder: data.subfolder ?? "", type: data.type ?? "input" };
+}
+
 export const interrupt = (c: ComfyConnection) => call(c, "interrupt", {}).catch(() => {});
 
 type History = Record<
   string,
   {
     status?: { status_str?: string; messages?: [string, { exception_message?: string; node_type?: string }][] };
-    outputs?: Record<string, { images?: ComfyFile[] }>;
+    outputs?: Record<string, { images?: ComfyFile[]; audio?: ComfyFile[] }>;
   }
 >;
 
@@ -429,7 +560,7 @@ export async function render(c: ComfyConnection, graph: Graph, signal: AbortSign
           : "ComfyUI failed to render this.",
       );
     }
-    const file = Object.values(entry.outputs ?? {}).flatMap((o) => o.images ?? [])[0];
+    const file = Object.values(entry.outputs ?? {}).flatMap((o) => o.images ?? o.audio ?? [])[0];
     if (!file) throw new ComfyError("ComfyUI finished but saved no file.");
     return file;
   }

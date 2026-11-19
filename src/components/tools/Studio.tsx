@@ -1,16 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ACCENTS,
   ComfyError,
+  DEFAULT_VOICE,
+  VOICE_SAMPLE_LINE,
+  VOICE_SCALES,
   WORKFLOWS,
   connect,
+  describeVoice,
+  fileRef,
   fileUrl,
   installedModels,
   interrupt,
   joinGraph,
   render,
   shotGraph,
+  uploadVoice,
+  voiceSampleGraph,
   type CaptionStyle,
   type ComfyConnection,
   type ComfyFile,
@@ -18,13 +26,34 @@ import {
   type ModelFolder,
   type ModelSlot,
   type SoundMode,
+  type VoiceDesign,
 } from "@/lib/comfy";
 import type { Storyboard } from "@/lib/schemas";
 import { Card, Field, inputClass } from "../ui";
 
 const STORAGE = "ds_comfy";
-type Saved = { conn: ComfyConnection; workflow: string; picks: Record<string, Record<string, string>> };
-const DEFAULTS: Saved = { conn: { host: "127.0.0.1", port: 8188, modelsDir: "" }, workflow: WORKFLOWS[0].id, picks: {} };
+/** The recording the narrator's voice is copied from: one made from the sliders, or the user's own upload. */
+type VoiceRef = { file: ComfyFile; from: "designed" | "uploaded"; name: string };
+type Saved = {
+  conn: ComfyConnection;
+  workflow: string;
+  picks: Record<string, Record<string, string>>;
+  voice: VoiceDesign;
+  voiceRef?: VoiceRef;
+};
+const DEFAULTS: Saved = {
+  conn: { host: "127.0.0.1", port: 8188, modelsDir: "" },
+  workflow: WORKFLOWS[0].id,
+  picks: {},
+  voice: DEFAULT_VOICE,
+};
+
+const SLIDERS: { key: keyof typeof VOICE_SCALES; label: string; low: string; high: string }[] = [
+  { key: "age", label: "Age", low: "Younger", high: "Older" },
+  { key: "pitch", label: "Pitch", low: "Deeper", high: "Higher" },
+  { key: "pace", label: "Pace", low: "Slower", high: "Faster" },
+  { key: "energy", label: "Energy", low: "Calmer", high: "Livelier" },
+];
 
 type Shot = Storyboard["shots"][number] & {
   seed: number;
@@ -66,7 +95,8 @@ export function Studio({ board }: { board: Storyboard }) {
   const [negative, setNegative] = useState<string | null>(null);
   const [caption, setCaption] = useState<CaptionStyle>({ on: true, position: "bottom", size: 4.5 });
   const [soundMode, setSoundMode] = useState<SoundMode>("voiceover");
-  const [voice, setVoice] = useState("a warm, clear, energetic adult voice speaking at a brisk pace");
+  const [voiceBusy, setVoiceBusy] = useState<"sample" | "upload" | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
 
   const [running, setRunning] = useState(false);
   const [final, setFinal] = useState<{ file?: ComfyFile; error?: string }>({});
@@ -109,7 +139,9 @@ export function Studio({ board }: { board: Storyboard }) {
     let stored: Saved | null = null;
     try {
       const raw = JSON.parse(localStorage.getItem(STORAGE) ?? "null");
-      if (raw?.conn?.host) stored = { ...DEFAULTS, ...raw, conn: { ...DEFAULTS.conn, ...raw.conn } };
+      if (raw?.conn?.host) {
+        stored = { ...DEFAULTS, ...raw, conn: { ...DEFAULTS.conn, ...raw.conn }, voice: { ...DEFAULT_VOICE, ...raw.voice } };
+      }
     } catch {
       // unreadable settings: start from the defaults
     }
@@ -122,18 +154,15 @@ export function Studio({ board }: { board: Storyboard }) {
   }, [doConnect]);
 
   /** The model file each slot will load: the user's pick, else the expected file if it is installed. */
-  const models = useMemo(() => {
-    const picks = saved.picks[workflow.id] ?? {};
-    return Object.fromEntries(
-      workflow.slots.map((slot) => {
-        const have = installed[slot.folder] ?? [];
-        const pick = picks[slot.id];
-        const official = [slot.expected, ...(slot.also ?? [])].find((m) => m && have.includes(m));
-        const value = pick && have.includes(pick) ? pick : (official ?? "");
-        return [slot.id, value];
-      }),
-    );
-  }, [saved.picks, workflow, installed]);
+  const picks = saved.picks[workflow.id] ?? {};
+  const models: Record<string, string> = Object.fromEntries(
+    workflow.slots.map((slot) => {
+      const have = installed[slot.folder] ?? [];
+      const pick = picks[slot.id];
+      const official = [slot.expected, ...(slot.also ?? [])].find((m) => m && have.includes(m));
+      return [slot.id, pick && have.includes(pick) ? pick : (official ?? "")];
+    }),
+  );
 
   const missing = workflow.slots.filter((s) => !models[s.id]);
   const ready = Boolean(info) && missing.length === 0;
@@ -142,8 +171,14 @@ export function Studio({ board }: { board: Storyboard }) {
   const total = shots.reduce((sum, s) => sum + lengthOf(s), 0);
   const doneCount = shots.filter((s) => s.state === "done").length;
 
+  const voiceText = describeVoice(saved.voice);
+  // A voice recording only applies on a workflow that can copy one, and only when there is a voiceover.
+  const voiceRef = workflow.voiceRef && soundMode === "voiceover" ? saved.voiceRef : undefined;
   const promptFor = (s: Shot) =>
-    workflow.prompt({ style, visual: s.visual, motion: s.motion, sound: s.sound, caption: s.caption, soundMode, voice });
+    workflow.prompt({
+      style, visual: s.visual, motion: s.motion, sound: s.sound, caption: s.caption, soundMode,
+      voice: voiceText, hasVoiceRef: Boolean(voiceRef),
+    });
 
   const patchShot = (i: number, patch: Partial<Shot>) =>
     setShots((list) => list.map((s, j) => (j === i ? { ...s, ...patch } : s)));
@@ -164,7 +199,7 @@ export function Studio({ board }: { board: Storyboard }) {
     try {
       const graph = shotGraph(
         workflow,
-        { prompt: promptFor(shot), seconds: lengthOf(shot), width, height, seed: shot.seed, models, negative: negativeText },
+        { prompt: promptFor(shot), seconds: lengthOf(shot), width, height, seed: shot.seed, models, negative: negativeText, voiceRef: voiceRef && fileRef(voiceRef.file) },
         { text: shot.caption, style: caption },
         `DoShorts/${runId}/shot_${String(i + 1).padStart(2, "0")}`,
         soundMode === "silent",
@@ -207,6 +242,46 @@ export function Studio({ board }: { board: Storyboard }) {
       }
     } finally {
       setRunning(false);
+    }
+  }
+
+  const setVoice = (patch: Partial<VoiceDesign>) => {
+    // A sample made from the old sliders no longer matches them.
+    save({ ...saved, voice: { ...saved.voice, ...patch }, voiceRef: saved.voiceRef?.from === "designed" ? undefined : saved.voiceRef });
+    invalidateAll();
+  };
+
+  async function createVoice() {
+    setVoiceBusy("sample");
+    setVoiceError(null);
+    const controller = new AbortController();
+    abort.current = controller;
+    try {
+      const graph = voiceSampleGraph(workflow, models, voiceText, newSeed(), `DoShorts/voices/voice_${runId}`);
+      const file = await render(conn, graph, controller.signal);
+      save({ ...saved, voiceRef: { file, from: "designed", name: "Designed voice" } });
+      invalidateAll();
+    } catch (err) {
+      if (!(err instanceof DOMException)) setVoiceError(err instanceof Error ? err.message : "Could not create the voice.");
+    } finally {
+      setVoiceBusy(null);
+    }
+  }
+
+  async function uploadSample(file: File | undefined) {
+    if (!file) return;
+    setVoiceError(null);
+    if (!file.type.startsWith("audio/") && !file.type.startsWith("video/")) return setVoiceError("Choose an audio recording.");
+    if (file.size > 25 * 1024 * 1024) return setVoiceError("That file is too large. Use a sample under 25 MB.");
+    setVoiceBusy("upload");
+    try {
+      const stored = await uploadVoice(conn, file);
+      save({ ...saved, voiceRef: { file: stored, from: "uploaded", name: file.name } });
+      invalidateAll();
+    } catch (err) {
+      setVoiceError(err instanceof Error ? err.message : "The upload failed.");
+    } finally {
+      setVoiceBusy(null);
     }
   }
 
@@ -353,12 +428,98 @@ export function Studio({ board }: { board: Storyboard }) {
                   <option value="silent">Silent</option>
                 </select>
               </Field>
-              {soundMode === "voiceover" && (
-                <Field label="Narrator voice" hint="same description for every shot">
-                  <input className={`${inputClass} text-sm`} value={voice} disabled={running}
-                    onChange={(e) => { setVoice(e.target.value); invalidateAll(); }} />
-                </Field>
+            </div>
+          )}
+          {workflow.sound && soundMode === "voiceover" && (
+            <div className="space-y-4 border-t border-line pt-4">
+              <div>
+                <p className="text-sm font-medium">Narrator voice</p>
+                <p className="mt-1 text-sm text-mute">
+                  {voiceRef
+                    ? voiceRef.from === "uploaded"
+                      ? "Every shot copies the voice in your recording."
+                      : "Every shot copies the voice you created below."
+                    : workflow.voiceRef
+                      ? "Design a voice with the sliders and create it, or upload a recording of a voice to copy."
+                      : "Design the voice with the sliders. It is described to the model in every shot."}
+                </p>
+              </div>
+
+              {voiceRef?.from !== "uploaded" && (
+                <>
+                  <div className="grid gap-x-6 gap-y-4 sm:grid-cols-2">
+                    {SLIDERS.map(({ key, label, low, high }) => (
+                      <label key={key} className="block">
+                        <span className="flex items-baseline justify-between text-sm font-medium">
+                          {label}
+                          <span className="font-mono text-xs font-normal text-lime">{VOICE_SCALES[key][saved.voice[key]].replace(/^a /, "")}</span>
+                        </span>
+                        <input type="range" min={0} max={4} step={1} value={saved.voice[key]} disabled={running || voiceBusy !== null}
+                          onChange={(e) => setVoice({ [key]: Number(e.target.value) })} className="mt-2 w-full accent-lime" />
+                        <span className="flex justify-between text-[11px] text-mute"><span>{low}</span><span>{high}</span></span>
+                      </label>
+                    ))}
+                    <Field label="Voice">
+                      <select className={selectClass} value={saved.voice.who} disabled={running || voiceBusy !== null}
+                        onChange={(e) => setVoice({ who: e.target.value as VoiceDesign["who"] })}>
+                        <option value="woman">Woman</option>
+                        <option value="man">Man</option>
+                        <option value="person">Neutral</option>
+                      </select>
+                    </Field>
+                    <Field label="Accent">
+                      <select className={selectClass} value={saved.voice.accent} disabled={running || voiceBusy !== null}
+                        onChange={(e) => setVoice({ accent: e.target.value })}>
+                        {ACCENTS.map((a) => (
+                          <option key={a} value={a}>{a || "No particular accent"}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  </div>
+                  <p className="rounded-lg bg-ink px-3 py-2 text-sm text-mute">
+                    <span className="text-mute/60">Described as: </span>
+                    {voiceText}
+                  </p>
+                </>
               )}
+
+              {voiceRef && (
+                <div className="flex flex-wrap items-center gap-3 rounded-xl border border-lime/40 bg-lime/5 p-3">
+                  <span className="text-sm font-medium">{voiceRef.name}</span>
+                  <audio src={fileUrl(conn, voiceRef.file)} controls className="h-9 max-w-full" />
+                  <button type="button" disabled={running} className={linkClass}
+                    onClick={() => { save({ ...saved, voiceRef: undefined }); invalidateAll(); }}>
+                    Remove
+                  </button>
+                </div>
+              )}
+
+              {workflow.voiceRef ? (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                  {voiceRef?.from !== "uploaded" && (
+                    <button type="button" onClick={createVoice} disabled={!ready || running || voiceBusy !== null}
+                      className="rounded-full border border-line px-5 py-2 text-sm font-medium hover:border-mute disabled:opacity-50">
+                      {voiceBusy === "sample" ? "Creating the voice…" : voiceRef ? "Create it again" : "Create this voice"}
+                    </button>
+                  )}
+                  <label className={`cursor-pointer rounded-full border border-line px-5 py-2 text-sm font-medium hover:border-mute has-focus-visible:outline-2 has-focus-visible:outline-lime ${!info || running || voiceBusy !== null ? "pointer-events-none opacity-50" : ""}`}>
+                    <input type="file" accept="audio/*" className="sr-only" disabled={!info || running || voiceBusy !== null}
+                      onChange={(e) => { void uploadSample(e.target.files?.[0]); e.target.value = ""; }} />
+                    {voiceBusy === "upload" ? "Uploading…" : voiceRef?.from === "uploaded" ? "Upload a different recording" : "Upload a voice recording"}
+                  </label>
+                  {!voiceRef && <p className="text-sm text-mute">Creating it renders a short sample saying: “{VOICE_SAMPLE_LINE}”</p>}
+                </div>
+              ) : (
+                <p className="text-sm text-mute">
+                  Each shot is voiced separately, so the voice can drift between shots. To hold one voice, or to copy a recording,{" "}
+                  <button type="button" disabled={running} className="text-text underline underline-offset-4"
+                    onClick={() => { save({ ...saved, workflow: "h3ref" }); setSizeIndex(0); setNegative(null); invalidateAll(); }}>
+                    switch to MiniMax H3 Reference
+                  </button>
+                  .
+                </p>
+              )}
+              {voiceError && <p role="alert" className="text-sm text-hot">{voiceError}</p>}
             </div>
           )}
         </Card>
@@ -473,7 +634,9 @@ export function Studio({ board }: { board: Storyboard }) {
                   {!workflow.sound || soundMode === "silent"
                     ? "It has no sound. Record the captions as your voiceover over it, or add audio in your editor."
                     : soundMode === "voiceover"
-                      ? "Each shot's voiceover was generated separately, so the voice can vary between shots. If it does, switch Sound to background only and record the voiceover yourself."
+                      ? voiceRef
+                        ? "The narrator's voice was copied from your voice recording in every shot."
+                        : "Each shot's voiceover was generated separately, so the voice can vary between shots. MiniMax H3 Reference holds one voice."
                       : "It has background sound only. Record the captions as your voiceover over it."}
                 </p>
               </div>
