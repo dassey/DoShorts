@@ -31,12 +31,15 @@ Local setup: Ollama only answers pages it trusts, so when DoShorts is not served
 ## How keys are kept safe
 
 - **A user's key never reaches the DoShorts server.** It is sent only to the provider the user chose. No DoShorts route accepts a key.
+- **It does not live in the page.** Once entered, the key is handed to a dedicated worker (`src/lib/keyring.worker.ts`) and the field is cleared. The worker has its own memory that page scripts cannot read, and it makes the provider calls itself. No message it answers returns key material.
+- **Never held whole.** Inside the worker the key is split into random XOR shares, assembled only for the moment of a request, then wiped and re-split with fresh randomness.
+- **Locked to one destination.** A key is bound to the origin it was entered for. The worker refuses to send it anywhere else, so even code that can talk to the worker cannot redirect the key to another address. Changing the address removes the key.
 - **Never in clear text on the wire.** A key is refused for any `http://` address that is not the user's own machine. Redirects are not followed, and no cookies or referrer are sent with provider requests.
-- **Never in plain storage.** Not in a URL, cookie, log or `localStorage`. By default it lives in memory and is gone on reload. If the user ticks Remember, it is encrypted with AES-GCM under a non-extractable WebCrypto key and kept in that browser's IndexedDB; unticking erases it.
+- **Never in plain storage.** Not in a URL, cookie, log or `localStorage`. By default it exists only in the worker's memory and is gone on reload. If the user ticks Remember, it is encrypted with AES-GCM under a non-extractable WebCrypto key and kept in that browser's IndexedDB, with its bound origin; unticking erases it.
 - **Locked-down page.** No third-party scripts, cannot be framed, sends no referrer.
 - **Deployer secrets stay on the server.** They are read from the environment only and are never sent to the browser.
 
-The limit of any in-browser approach: software already running inside the user's browser profile, such as a malicious extension, can read what the page can. For keys that matter, use a provider key with a spend cap.
+Limits, stated plainly. While a request is being sent, the key briefly exists whole inside the worker. Remember is weaker than memory-only: the encrypted copy can be decrypted by any script running on this site's origin, so leave it off for the strongest protection. And nothing in a browser defends against a debugger or malware on the user's own machine. For keys that matter, use a provider key with a spend cap.
 
 ## Run it
 
@@ -61,7 +64,7 @@ Optional environment (see `.env.example`):
 - **Stack**: Next.js (App Router), Tailwind, Auth.js with Google. No database.
 - **Prompts and result shapes** (`src/lib/prompts.ts`, `src/lib/schemas.ts`) are shared by the browser and the server. Each tool is one model call that must return JSON matching a Zod schema; list lengths are enforced in code.
 - **Providers** (`src/lib/providers.ts`): one OpenAI-compatible adapter (structured outputs, with a prompt-only fallback for endpoints that lack them) and the Anthropic SDK. `src/lib/claude.ts` is the server-side Claude path, which adds web search.
-- **Key vault** (`src/lib/vault.ts`): the encrypted IndexedDB store for remembered keys.
+- **Keyring** (`src/lib/keyring.worker.ts`, `src/lib/keyring.ts`): the isolated worker that holds keys and makes provider calls. **Key vault** (`src/lib/vault.ts`): the encrypted IndexedDB store for remembered keys.
 - **Free-run gate** (`src/lib/usage.ts`): applies to the built-in AI only. Counted per tool in an HMAC-signed, HTTP-only cookie and enforced in the API route. Only successful runs count.
 - **Short Analyzer**: works from the title, public stats and captions when YouTube serves them, or a pasted transcript. It does not watch the video, and the result says which inputs it used. The server fetches this public YouTube data for every AI option (`/api/context`), since a browser cannot.
 - **Trending Topics**: grounded in the YouTube Data API when a key is set, plus web search on the built-in Claude option. With no live source it says so instead of presenting guesses as trends.

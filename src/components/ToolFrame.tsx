@@ -4,8 +4,9 @@ import Link from "next/link";
 import { useCallback, useState } from "react";
 import { GenerationError } from "@/lib/errors";
 import { buildPrompt, finalize, needsContext, SYSTEM, type ToolContext } from "@/lib/prompts";
-import { generateWith, type AiConfig } from "@/lib/providers";
-import { inputs, outputs } from "@/lib/schemas";
+import { keyring } from "@/lib/keyring";
+import type { AiConfig } from "@/lib/providers";
+import { inputs } from "@/lib/schemas";
 import { FREE_USES_PER_TOOL, getTool, type ToolSlug } from "@/lib/tools";
 import { useAi } from "./AiProvider";
 import { useApp } from "./AppProvider";
@@ -17,8 +18,11 @@ type State<T> =
   | { status: "done"; result: T }
   | { status: "error"; error: string };
 
-/** Runs a tool on the user's own AI. The model call goes from this browser straight to the provider. */
-async function runOnOwnAi(slug: ToolSlug, raw: Record<string, unknown>, config: AiConfig): Promise<unknown> {
+/**
+ * Runs a tool on the user's own AI. The keyring worker makes the model call,
+ * from this browser straight to the provider, attaching the key itself.
+ */
+async function runOnOwnAi(slug: ToolSlug, raw: Record<string, unknown>, preset: string, config: AiConfig): Promise<unknown> {
   const parsed = inputs[slug].safeParse(raw);
   if (!parsed.success) throw new GenerationError("Check the form and try again.", 400);
 
@@ -35,10 +39,15 @@ async function runOnOwnAi(slug: ToolSlug, raw: Record<string, unknown>, config: 
     ctx = data;
   }
 
-  const data = await generateWith(config, {
+  const data = await keyring<unknown>({
+    op: "generate",
+    preset,
+    kind: config.kind,
+    baseUrl: config.baseUrl,
+    model: config.model,
+    slug,
     system: SYSTEM,
     prompt: buildPrompt(slug, parsed.data as never, ctx),
-    schema: outputs[slug],
   });
   return finalize(slug, data as never, ctx);
 }
@@ -54,7 +63,7 @@ export function useTool<T>(slug: ToolSlug) {
       setState({ status: "loading" });
       try {
         if (active.type === "own") {
-          setState({ status: "done", result: (await runOnOwnAi(slug, input, active.config)) as T });
+          setState({ status: "done", result: (await runOnOwnAi(slug, input, active.preset.id, active.config)) as T });
           return;
         }
         const res = await fetch(`/api/tools/${slug}`, {

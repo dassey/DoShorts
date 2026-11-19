@@ -9,7 +9,7 @@ const DB = "doshorts";
 const STORE = "vault";
 const MASTER = "__master";
 
-type Sealed = { iv: Uint8Array<ArrayBuffer>; data: ArrayBuffer };
+type Sealed = { iv: Uint8Array<ArrayBuffer>; data: ArrayBuffer; origin: string };
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
@@ -41,18 +41,19 @@ async function masterKey(): Promise<CryptoKey> {
   return key;
 }
 
-export async function saveKey(id: string, secret: string): Promise<void> {
+/** `origin` is the only place this key may ever be sent; it is stored alongside the ciphertext. */
+export async function saveKey(id: string, secret: string, origin: string): Promise<void> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const data = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await masterKey(), new TextEncoder().encode(secret));
-  await tx("readwrite", (s) => s.put({ iv, data } satisfies Sealed, id));
+  await tx("readwrite", (s) => s.put({ iv, data, origin } satisfies Sealed, id));
 }
 
-export async function loadKey(id: string): Promise<string | null> {
+export async function loadKey(id: string): Promise<{ secret: string; origin: string } | null> {
   try {
     const sealed = await tx<Sealed | undefined>("readonly", (s) => s.get(id));
     if (!sealed) return null;
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: sealed.iv }, await masterKey(), sealed.data);
-    return new TextDecoder().decode(plain);
+    return { secret: new TextDecoder().decode(plain), origin: sealed.origin };
   } catch {
     return null;
   }

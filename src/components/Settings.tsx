@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { GenerationError } from "@/lib/errors";
-import { PRESETS, getPreset, listModels } from "@/lib/providers";
+import { keyring } from "@/lib/keyring";
+import { PRESETS, getPreset } from "@/lib/providers";
 import { HOSTED, useAi } from "./AiProvider";
 import { useApp } from "./AppProvider";
 import { Field, inputClass } from "./ui";
@@ -33,6 +34,14 @@ function Choice({
   );
 }
 
+function hostOf(url: string) {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "this address";
+  }
+}
+
 export function Settings() {
   const { hosted } = useApp();
   const ai = useAi();
@@ -40,7 +49,18 @@ export function Settings() {
 
   const preset = ai.choice && ai.choice !== HOSTED ? getPreset(ai.choice) : undefined;
   const s = preset ? ai.settings(preset.id) : null;
-  const key = preset ? ai.keyFor(preset.id) : "";
+  const hasKey = preset ? ai.hasKey(preset.id) : false;
+  // Uncontrolled on purpose: the typed key goes from the field to the keyring and is never put in React state.
+  const keyField = useRef<HTMLInputElement>(null);
+
+  async function saveKey() {
+    const field = keyField.current;
+    if (!preset || !field || !field.value.trim()) return;
+    const value = field.value.trim();
+    field.value = "";
+    await ai.setKey(preset.id, value);
+    setCheck({ status: "idle" });
+  }
   const models = check.status === "ok" ? check.models : [];
 
   const select = (id: string) => {
@@ -52,7 +72,8 @@ export function Settings() {
     if (!preset || !s) return;
     setCheck({ status: "busy" });
     try {
-      const found = await listModels({ kind: preset.kind, baseUrl: s.baseUrl, model: s.model, apiKey: key || undefined });
+      await saveKey();
+      const found = await keyring<string[]>({ op: "models", preset: preset.id, kind: preset.kind, baseUrl: s.baseUrl });
       setCheck({ status: "ok", models: found });
       if (!s.model && found.length === 1) ai.update(preset.id, { model: found[0] });
     } catch (err) {
@@ -122,19 +143,47 @@ export function Settings() {
 
           {(preset.needsKey || preset.id === "custom") && (
             <div>
-              <Field label="API key" hint={preset.needsKey ? undefined : "optional"}>
-                <input
-                  className={`${inputClass} font-mono`}
-                  type="password"
-                  value={key}
-                  onChange={(e) => ai.setKey(preset.id, e.target.value.trim())}
-                  placeholder={preset.keyHint ?? "Leave empty if the endpoint needs none"}
-                  spellCheck={false}
-                  autoComplete="off"
-                  data-1p-ignore
-                  data-lpignore="true"
-                />
-              </Field>
+              {hasKey ? (
+                <div>
+                  <span className="mb-1.5 block text-sm font-medium">API key</span>
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-ink px-3.5 py-2.5">
+                    <span className="text-[15px]">
+                      <span className="mr-2 font-mono text-lime">••••••••</span>
+                      Key set, locked to {hostOf(s.baseUrl)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => ai.clearKey(preset.id)}
+                      className="text-sm text-mute underline underline-offset-4 hover:text-text"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <Field label="API key" hint={preset.needsKey ? undefined : "optional"}>
+                  <div className="flex gap-2">
+                    <input
+                      ref={keyField}
+                      className={`${inputClass} font-mono`}
+                      type="password"
+                      placeholder={preset.keyHint ?? "Leave empty if the endpoint needs none"}
+                      onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), void saveKey())}
+                      spellCheck={false}
+                      autoComplete="off"
+                      data-1p-ignore
+                      data-lpignore="true"
+                    />
+                    <button
+                      type="button"
+                      onClick={saveKey}
+                      className="shrink-0 rounded-xl border border-line px-4 text-sm font-medium hover:border-mute"
+                    >
+                      Set key
+                    </button>
+                  </div>
+                </Field>
+              )}
               <label className="mt-2.5 flex items-start gap-2.5 text-sm">
                 <input
                   type="checkbox"
@@ -147,7 +196,7 @@ export function Settings() {
                   <span className="block text-mute">
                     {s.remember
                       ? "Stored encrypted in this browser. Untick to erase it."
-                      : "Off: the key is kept in memory only and is gone when you close or reload the tab."}
+                      : "Off: the key is held only in an isolated worker's memory and is gone when you close or reload the tab."}
                   </span>
                 </span>
               </label>
@@ -227,10 +276,12 @@ export function Settings() {
       <section className="mt-10 text-sm leading-relaxed text-mute">
         <h2 className="mb-2 font-semibold tracking-wide uppercase">How your key is handled</h2>
         <ul className="space-y-1.5">
-          <li>It is sent only to the provider you chose, over https (or to your own machine). Never to DoShorts.</li>
-          <li>It is never written to a URL, a cookie, a log or plain browser storage.</li>
-          <li>It lives in memory unless you tick Remember, which stores it encrypted in this browser only.</li>
-          <li>This page loads no third-party scripts.</li>
+          <li>Once set, the key leaves this page. It is held in a separate, isolated worker that the page cannot read.</li>
+          <li>Inside the worker it is never stored whole: it is split into random pieces that are reshuffled after every use.</li>
+          <li>It is locked to the address you entered it for. The worker will not send it anywhere else.</li>
+          <li>It only travels over https, or to your own machine. Never to DoShorts, a URL, a cookie or a log.</li>
+          <li>Remember stores it encrypted in this browser only. Leave it off for the strongest protection.</li>
+          <li>This site loads no third-party scripts.</li>
         </ul>
       </section>
     </div>
